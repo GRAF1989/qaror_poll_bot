@@ -1,64 +1,68 @@
-import logging
-from telegram import Update, Poll
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, PollHandler
+import telebot
+from telebot.types import Message
+import os
 
-logging.basicConfig(level=logging.INFO)
+TOKEN = os.getenv("BOT_TOKEN")
 
-ALLOWED_USERS = {"@farrux_yoqubjonov", "@saidakromraculev", "@AzamatQobilov"}
+bot = telebot.TeleBot(TOKEN)
+
+ALLOWED_USERS = ['@farrux_yoqubjonov', '@saidakromraculev', '@AzamatQobilov']
 poll_votes = {}
+poll_meta = {}
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
-        return
-    message = update.message
-    if message.photo:
-        await send_poll(message, context)
-    elif message.text and "app" in message.text.lower():
-        await send_poll(message, context)
+@bot.message_handler(func=lambda message: message.text and 'app' in message.text.lower())
+def on_app_text(message: Message):
+    send_poll(message)
 
-async def send_poll(message, context):
-    poll_message = await message.reply_poll(
+@bot.message_handler(content_types=['photo'])
+def on_photo(message: Message):
+    send_poll(message)
+
+def send_poll(message: Message):
+    poll_msg = bot.send_poll(
+        chat_id=message.chat.id,
         question="Jamoaning ushbu varianti uchun qaror qabul qiling",
         options=["Qabul", "Qabul emas"],
-        is_anonymous=False
+        is_anonymous=False,
+        reply_to_message_id=message.message_id
     )
-    poll_votes[poll_message.poll.id] = {
-        "message": poll_message,
-        "votes": {},
+    poll_votes[poll_msg.poll.id] = {}
+    poll_meta[poll_msg.poll.id] = {
+        'chat_id': message.chat.id,
+        'reply_to_message_id': message.message_id
     }
 
-async def poll_vote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    poll_id = update.poll_answer.poll_id
-    user_id = update.poll_answer.user.id
-    username = update.poll_answer.user.username
+@bot.poll_answer_handler()
+def handle_poll_answer(poll_answer):
+    poll_id = poll_answer.poll_id
+    user_id = poll_answer.user.id
+    username = '@' + poll_answer.user.username if poll_answer.user.username else None
+    option_id = poll_answer.option_ids[0]
 
     if poll_id not in poll_votes:
+        poll_votes[poll_id] = {}
+
+    if username not in ALLOWED_USERS:
+        bot.send_message(user_id, "⛔ Siz ruxsatsiz foydalanuvchisiz. So‘rovnoma bekor qilindi.")
+        poll_votes.pop(poll_id, None)
+        poll_meta.pop(poll_id, None)
         return
-    if f"@{username}" not in ALLOWED_USERS:
-        return
 
-    poll_data = poll_votes[poll_id]
-    poll_data["votes"][user_id] = update.poll_answer.option_ids[0]
+    poll_votes[poll_id][username] = option_id
 
-    if len(poll_data["votes"]) == 3:
-        options = poll_data["votes"].values()
-        qabul_count = sum(1 for o in options if o == 0)
-        result_text = "✅ Qabul qilindi" if qabul_count >= 2 else "❌ Qabul qilinmadi"
-        await context.bot.send_message(
-            chat_id=poll_data["message"].chat_id,
-            text=result_text,
-            reply_to_message_id=poll_data["message"].message_id
-        )
-        del poll_votes[poll_id]
+    if len(poll_votes[poll_id]) == 3:
+        qabul_soni = sum(1 for vote in poll_votes[poll_id].values() if vote == 0)
+        result = "✅ Qabul qilindi" if qabul_soni >= 2 else "❌ Qabul qilinmadi"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Qaror Bot ishga tushdi!")
+        meta = poll_meta.get(poll_id)
+        if meta:
+            bot.send_message(
+                chat_id=meta['chat_id'],
+                text=result,
+                reply_to_message_id=meta['reply_to_message_id']
+            )
 
-if __name__ == '__main__':
-    import os
-    TOKEN = os.getenv("BOT_TOKEN")
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-    app.add_handler(PollHandler(poll_vote_handler))
-    app.run_polling()
+        poll_votes.pop(poll_id, None)
+        poll_meta.pop(poll_id, None)
+
+bot.infinity_polling()
